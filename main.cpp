@@ -164,7 +164,7 @@ private:
     }
 
 public:
-    Ghost process_main(const char *base_name, const char *output_name)
+    Ghost process_main(const char *base_name)
     {
         entries.clear();
         nodes.clear();
@@ -179,7 +179,7 @@ public:
             
             if(data == NULL) break; //end of demos
 
-            if(dem == 2) process_demo(data, realTime);
+            process_demo(data, realTime);
 
             if(data) delete[] data;
         }
@@ -197,13 +197,11 @@ public:
         uint32_t e1 = entries.size()-1;
         while(e1 - e0 > 1)
         {
-            //printf("< %s, %s >\n", entries[e0].mapName, entries[e1].mapName);
             uint32_t mid = (e0+e1)/2;
             float midTime = entries[mid].realTime;
             if(realTime < midTime) e1 = mid; else e0 = mid;
         }
         curEntry = e0;
-        //printf("Map: %s\n", entries[curEntry].mapName);
 
         //if(0 != strcmp(mapName, entries[curEntry].mapName)) return false;
 
@@ -212,7 +210,6 @@ public:
         uint32_t n1 = entries[curEntry].end;
         while(n1 - n0 > 1)
         {
-            //printf("< %g, %g >\n", nodes[n0].realTime, nodes[n1].realTime);
             uint32_t mid = (n0+n1)/2;
             float midTime = nodes[mid].realTime;
             if(realTime < midTime) n1 = mid; else n0 = mid;
@@ -225,12 +222,22 @@ public:
 int main(int argc, char *argv[])
 {
     Ghost g;
-    g.process_main("./demos/run", "output.ghost");
+    g.process_main("./demos/run");
 
-    for(int i = 0; i < g.entries.size(); i++)
+    //generate triggers from wr demos (first 15s)
+    FILE *fp = fopen("muty.cfg", "w");
+    fprintf(fp, "bxt_triggers_clear\n");
+    for(float t = 0; t < 15; t += 0.001)
     {
-        //printf("%s\n", g.entries[i].mapName);
+        bool b = g.getNode(t, "null");
+        if(!b) break;
+
+        vec3 pos = g.nodes[g.curNode].position;
+
+        fprintf(fp, "bxt_triggers_add %g %g %g %g %g %g\n", pos.x, pos.y, pos.z, pos.x+1, pos.y+1, pos.z+1);
     }
+
+    fclose(fp);
 
     bool b = g.getNode(60*9+17, "a");
 }
