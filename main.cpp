@@ -4,9 +4,11 @@
 #include <stdint.h>
 #include <vector>
 
+#define ERROR { printf("Error: %s: %d\n", __FILE__, __LINE__); exit(1); }
+
 using std::vector;
 
-typedef struct
+struct DemoHeader
 {
     uint8_t tag[8];
     uint32_t demoProtocol;
@@ -15,9 +17,9 @@ typedef struct
     uint8_t  modName[260];
     int32_t  mapCrc;
     uint32_t dirOffset;
-} DemoHeader;
+};
 
-typedef struct
+struct DemoDirectory
 {
     uint32_t id;
     uint8_t name[64];
@@ -27,182 +29,208 @@ typedef struct
     uint32_t frames;
     uint32_t offset;
     uint32_t length;
-} DemoDirectory;
+};
 
-typedef struct
+struct vec3
 {
     float x, y, z;
-} vec3;
+};
 
-#define READ(x) { k = fread(&x, sizeof(x), 1, input); if(k != 1) { printf("Couldn't read, line %d\n", __LINE__); exit(1); } }
-#define MOVETO(n) { fseek(input, n, SEEK_SET); }
-#define SKIP(n) { fseek(input, n, SEEK_CUR); }
-
-typedef struct
+struct GhostNode
 {
     float realTime;
     vec3 position;
-} GhostNode;
+};
 
-typedef struct
+struct GhostEntry
 {
     uint8_t mapName[260];
     float realTime;
     uint32_t begin;
     uint32_t end;
-} GhostEntry;
+};
 
-typedef struct
+template <class T>
+T READ(uint8_t *data, uint32_t &offset)
 {
-    uint32_t id;
-    uint32_t numEntries;
-} GhostHeader;
-
-/*
-    Ghost file spec:
-
-    GhostHeader     header;
-    GhostEntry      entries[header.numEntries];
-    GhostNode       nodes[?];
-*/
-
-void process_demo(FILE *input, vector<GhostEntry> &entries, vector<GhostNode> &nodes, float &realTime)
-{
-    int k;
-    GhostEntry entry;
-
-    DemoHeader header;
-    READ(header);
-
-    strcpy((char*)entry.mapName, (const char*)header.mapName);
-    entry.realTime = realTime;
-    entry.begin = nodes.size();
-
-    MOVETO(header.dirOffset);
-
-    uint32_t numDirs;
-    READ(numDirs);
-
-    DemoDirectory dir;
-    bool playbackFound = false;
-
-    for(int i = 0; i < numDirs; i++)
-    {
-        READ(dir);
-        if(0 == strcmp("Playback", (const char*)dir.name))
-        {
-            playbackFound = true;
-            break;
-        }
-    }
-
-    if(!playbackFound)
-    {
-        printf("Playback not found!\n");
-        exit(1);
-    }
-
-    MOVETO(dir.offset);
-
-    bool end = false;
-    while(!end)
-    {
-        uint8_t type;
-        float time;
-        uint32_t frame;
-
-        READ(type);
-        READ(time);
-        READ(frame);
-
-        switch(type)
-        {
-            case 0:
-            case 1:
-            {
-                SKIP(4);
-                vec3 position;
-                READ(position);
-                SKIP(48);
-                float frameTime;
-                READ(frameTime);
-                nodes.push_back({realTime, position});
-                realTime += frameTime;
-                SKIP(396);
-                uint32_t frameDataLength;
-                READ(frameDataLength);
-                SKIP(frameDataLength);             
-            }
-            break;
-            case 2: break;
-            case 3: SKIP(64); break;
-            case 4: SKIP(32); break;
-            case 5: end = true; break;
-            case 6: SKIP(84); break;
-            case 7: SKIP(8); break;
-            case 8:
-            {
-                SKIP(4);
-                uint32_t sampleSize;
-                READ(sampleSize);
-                SKIP(sampleSize);
-                SKIP(16);
-            }
-            break;
-            case 9:
-            {
-                uint32_t num;
-                READ(num);
-                SKIP(num);
-            }
-            break;
-        }
-    }
-
-    entry.end = nodes.size();
-    entries.push_back(entry);
+    T *ptr = (T*)&data[offset];
+    offset += sizeof(T);
+    return *ptr;
 }
 
-void process_main(const char *base_name, const char *output_name)
+uint8_t *read_file(const char *filename)
 {
-    FILE *output = fopen(output_name, "wb");
+    FILE *input = fopen(filename, "rb");
+    if(!input) return NULL;
 
-    if(!output)
-    {
-        printf("Could not write file %s\n", output_name);
-        exit(1);
-    }
+    fseek(input, 0, SEEK_END);
+    int size = ftell(input);
+    fseek(input, 0, SEEK_SET);
 
+    uint8_t *data = new uint8_t[size];
+    if(1 != fread(data, size, 1, input)) ERROR;
+
+    fclose(input);
+    return data;
+}
+
+class Ghost
+{
+public:
     vector<GhostEntry> entries;
     vector<GhostNode> nodes;
-    float realTime = 0;
+    uint32_t curEntry;
+    uint32_t curNode;
 
-    int numDemos = 0;
-
-    for(int dem = 1; true; dem++)
+private:
+    void process_demo(uint8_t *data, float &realTime)
     {
-        char input_name[260];
-        sprintf(input_name, "%s_%d.dem", base_name, dem);
+        uint32_t offset = 0;
+        DemoHeader header = READ<DemoHeader>(data, offset);
 
-        FILE *input = fopen(input_name, "rb");
-        if(!input) break;
-        process_demo(input, entries, nodes, realTime);
-        fclose(input);
+        GhostEntry entry;
+        strcpy((char*)entry.mapName, (const char*)header.mapName);
+        entry.realTime = realTime;
+        entry.begin = nodes.size();
 
-        numDemos++;
+
+        offset = header.dirOffset;
+        uint32_t numDirs = READ<uint32_t>(data, offset);
+        DemoDirectory dir;
+
+        bool playbackFound = false;
+        for(int i = 0; i < numDirs; i++)
+        {
+            dir = READ<DemoDirectory>(data, offset);
+            if(0 == strcmp("Playback", (const char*)dir.name))
+            {
+                playbackFound = true;
+                break;
+            }
+        }
+
+        if(!playbackFound) ERROR;
+
+        offset = dir.offset;
+
+        bool end = false;
+        while(!end)
+        {
+            uint8_t type = READ<uint8_t>(data, offset);
+            float time = READ<float>(data, offset);
+            uint32_t frame = READ<uint32_t>(data, offset);
+
+            switch(type)
+            {
+                case 0:
+                case 1:
+                {
+                    offset += 4;
+                    vec3 position = READ<vec3>(data, offset);
+                    offset += 48;
+                    float frameTime = READ<float>(data, offset);
+                    nodes.push_back({realTime, position});
+                    realTime += frameTime;
+                    offset += 396;
+                    uint32_t frameDataLength = READ<uint32_t>(data, offset);
+                    offset += frameDataLength;
+                }
+                break;
+                case 2: break;
+                case 3: offset += 64; break;
+                case 4: offset += 32; break;
+                case 5: end = true; break;
+                case 6: offset += 84; break;
+                case 7: offset += 8; break;
+                case 8:
+                {
+                    offset += 4;
+                    uint32_t sampleSize = READ<uint32_t>(data, offset);
+                    offset += sampleSize + 16;
+                }
+                break;
+                case 9:
+                {
+                    uint32_t num = READ<uint32_t>(data, offset);
+                    offset += num;
+                }
+                break;
+            }
+        }
+
+        if(nodes.size() == 0) ERROR;
+        entry.end = nodes.size()-1;
+        entries.push_back(entry);
     }
 
-    GhostHeader header = {1337, (uint32_t)entries.size()};
+public:
+    Ghost process_main(const char *base_name, const char *output_name)
+    {
+        entries.clear();
+        nodes.clear();
+        Ghost ghost;
+        float realTime = 0;
 
-    int k;
-    k = fwrite(&header, sizeof(GhostHeader), 1, output);
-    k = fwrite(entries.data(), sizeof(GhostEntry), entries.size(), output);
-    k = fwrite(nodes.data(), sizeof(GhostNode), nodes.size(), output);
+        for(int dem = 1; true; dem++)
+        {
+            char input_name[260];
+            sprintf(input_name, "%s_%d.dem", base_name, dem);
+            uint8_t *data = read_file(input_name);
+            
+            if(data == NULL) break; //end of demos
 
-    fclose(output);
-}
+            if(dem == 2) process_demo(data, realTime);
+
+            if(data) delete[] data;
+        }
+
+        return ghost;
+    }
+
+    bool getNode(float realTime, const char *mapName)
+    {
+        if(nodes.size() < 1) return false;
+        if(entries.size() < 1) return false;
+
+        //binary search
+        uint32_t e0 = 0;
+        uint32_t e1 = entries.size()-1;
+        while(e1 - e0 > 1)
+        {
+            //printf("< %s, %s >\n", entries[e0].mapName, entries[e1].mapName);
+            uint32_t mid = (e0+e1)/2;
+            float midTime = entries[mid].realTime;
+            if(realTime < midTime) e1 = mid; else e0 = mid;
+        }
+        curEntry = e0;
+        //printf("Map: %s\n", entries[curEntry].mapName);
+
+        //if(0 != strcmp(mapName, entries[curEntry].mapName)) return false;
+
+        //binary search
+        uint32_t n0 = entries[curEntry].begin;
+        uint32_t n1 = entries[curEntry].end;
+        while(n1 - n0 > 1)
+        {
+            //printf("< %g, %g >\n", nodes[n0].realTime, nodes[n1].realTime);
+            uint32_t mid = (n0+n1)/2;
+            float midTime = nodes[mid].realTime;
+            if(realTime < midTime) n1 = mid; else n0 = mid;
+        }
+        curNode = n0;
+        return true;
+    }
+};
 
 int main(int argc, char *argv[])
 {
-    process_main("./demos/run", "output.ghost");
+    Ghost g;
+    g.process_main("./demos/run", "output.ghost");
+
+    for(int i = 0; i < g.entries.size(); i++)
+    {
+        //printf("%s\n", g.entries[i].mapName);
+    }
+
+    bool b = g.getNode(60*9+17, "a");
 }
